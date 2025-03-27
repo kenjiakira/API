@@ -6,6 +6,7 @@ const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
+const isProd = process.env.NODE_ENV === 'production';
 
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -21,8 +22,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 const API_KEY = process.env.APIKEY;
 const genAI = new GoogleGenerativeAI(API_KEY);
 
-const cacheDir = path.join(__dirname, 'cache');
-if (!fs.existsSync(cacheDir)) {
+const cacheDir = isProd ? '/tmp/cache' : path.join(__dirname, 'cache');
+if (!isProd && !fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir);
 }
 
@@ -30,6 +31,14 @@ const conversations = {};
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function downloadImage(url) {
+    if (isProd) {
+        const response = await axios({
+            url,
+            method: 'GET',
+            responseType: 'arraybuffer'
+        });
+        return Buffer.from(response.data, 'binary');
+    }
     const imagePath = path.join(cacheDir, `img_${Date.now()}.jpg`);
     const writer = fs.createWriteStream(imagePath);
     const response = await axios({
@@ -44,8 +53,8 @@ async function downloadImage(url) {
     });
 }
 
-async function fileToGenerativePart(imagePath) {
-    const imageBuffer = await fs.readFile(imagePath);
+async function fileToGenerativePart(imageData) {
+    const imageBuffer = Buffer.isBuffer(imageData) ? imageData : await fs.readFile(imageData);
     return {
         inlineData: {
             data: imageBuffer.toString('base64'),
@@ -82,14 +91,14 @@ app.get('/test', (req, res) => {
 app.post('/api/generate', async (req, res) => {
     try {
         const { prompt, threadID, imageUrl } = req.body;
-        let imagePath = null;
+        let imageData = null;
 
         if (imageUrl) {
-            imagePath = await downloadImage(imageUrl);
+            imageData = await downloadImage(imageUrl);
         }
 
         const model = genAI.getGenerativeModel({ 
-            model: imagePath ? "gemini-1.5-pro" : "gemini-1.5-flash",
+            model: imageData ? "gemini-1.5-pro" : "gemini-1.5-flash",
             generationConfig: {
                 temperature: 0.7,
                 maxOutputTokens: 1000,
@@ -103,8 +112,8 @@ app.post('/api/generate', async (req, res) => {
 `;
 
         let result;
-        if (imagePath) {
-            const imagePart = await fileToGenerativePart(imagePath);
+        if (imageData) {
+            const imagePart = await fileToGenerativePart(imageData);
             result = await retryWithExponentialBackoff(async () => {
                 return await model.generateContent([systemPrompt, imagePart, prompt || "Hãy mô tả hình ảnh này"]);
             });
@@ -125,8 +134,8 @@ app.post('/api/generate', async (req, res) => {
             conversations[threadID].shift();
         }
 
-        if (imagePath && fs.existsSync(imagePath)) {
-            fs.unlinkSync(imagePath);
+        if (!isProd && imageData && fs.existsSync(imageData)) {
+            fs.unlinkSync(imageData);
         }
 
         res.json({ 
@@ -147,7 +156,8 @@ app.post('/api/generate', async (req, res) => {
         }
         res.status(500).json({ 
             success: false, 
-            error: "Internal server error" 
+            error: "Internal server error",
+            details: error.message 
         });
     }
 });
@@ -177,3 +187,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
+
+module.exports = app;
