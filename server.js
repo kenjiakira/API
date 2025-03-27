@@ -163,9 +163,53 @@ app.post('/api/generate', async (req, res) => {
 });
 
 app.get('/api/prompt=:prompt', async (req, res) => {
-    const threadID = 'default';
-    req.body = { prompt: req.params.prompt, threadID };
-    await app.post('/api/generate', req, res);
+    try {
+        const prompt = req.params.prompt;
+        const threadID = 'default';
+        
+        const model = genAI.getGenerativeModel({ 
+            model: "gemini-1.5-flash",
+            generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 1000,
+            }
+        });
+
+        const history = conversations[threadID] || [];
+        const context = history.join("\n");
+        const systemPrompt = `Bạn là AI PIXEL BOT, một AI với kiến thức uyên bác và khả năng tư duy sắc bén:`;
+        const fullPrompt = `${systemPrompt}\n${context}\nUser: ${prompt}\nPIXEL:`;
+        
+        const result = await retryWithExponentialBackoff(async () => {
+            return await model.generateContent(fullPrompt);
+        });
+
+        const response = result.response.text();
+
+        if (!conversations[threadID]) conversations[threadID] = [];
+        conversations[threadID].push(`User: ${prompt}`);
+        conversations[threadID].push(`PIXEL: ${response}`);
+
+        while (conversations[threadID].length > 100) {
+            conversations[threadID].shift();
+        }
+
+        res.json({ 
+            success: true, 
+            response,
+            timestamp: new Date().toISOString(),
+            threadID,
+            historyLength: conversations[threadID].length
+        });
+
+    } catch (error) {
+        console.error("Generation error:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Internal server error",
+            details: error.message 
+        });
+    }
 });
 
 app.use((err, req, res, next) => {
