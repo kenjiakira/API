@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: pixel-ai-api
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 18.0.0
+      - key: APIKEY
+        sync: false
