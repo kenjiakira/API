@@ -6,7 +6,8 @@
     "start": "node server.js",
     "build": "npm install",
     "dev": "nodemon server.js",
-    "postinstall": "npm audit fix --force"
+    "postinstall": "npm audit fix --force",
+    "vercel-build": "npm install"
   },
   "keywords": [],
   "author": "",
