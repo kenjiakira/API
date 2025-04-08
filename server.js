@@ -13,7 +13,6 @@ const isProd = process.env.NODE_ENV === 'production';
 
 const API_KEY = process.env.APIKEY;
 const MODEL_NAME = 'gemini-2.0-flash';
-const DEFAULT_SYSTEM_PROMPT = "You are a professional CV assistant that helps create and format excellent resumes and CVs.";
 
 
 if (!API_KEY) {
@@ -139,34 +138,28 @@ app.get('/test', (req, res) => {
   });
 });
 
-app.post('/api/generate-cv', async (req, res) => {
+app.post('/api/generate', async (req, res) => {
   try {
     const { 
       prompt, 
       threadID, 
       imageUrl,
-      cvData,
-      customPromptTemplate,
       temperature = 0.7,
       maxTokens = 1500,
-      systemPrompt = DEFAULT_SYSTEM_PROMPT,
       clearHistory = false
     } = req.body;
     
-    if (!prompt && !cvData) {
+    if (!prompt) {
       return res.status(400).json({
         success: false,
-        error: "Either prompt or cvData is required"
+        error: "Prompt is required"
       });
     }
     
-    
     const generationConfig = {
-      ...MODEL_CONFIG.defaultConfig,
       temperature: parseFloat(temperature),
       maxOutputTokens: parseInt(maxTokens)
     };
-    
     
     let imageData = null;
     if (imageUrl) {
@@ -180,12 +173,10 @@ app.post('/api/generate-cv', async (req, res) => {
       }
     }
     
-    
     const model = genAI.getGenerativeModel({ 
       model: MODEL_NAME,
       generationConfig
     });
-    
     
     const { threadID: conversationId, history } = getConversation(threadID);
     
@@ -193,53 +184,30 @@ app.post('/api/generate-cv', async (req, res) => {
       conversations[conversationId] = [];
     }
     
-    const context = history.join("\n");
-    
-    
     let result;
     if (imageData) {
       const imagePart = await fileToGenerativePart(imageData);
       result = await retryWithExponentialBackoff(async () => {
-        return await model.generateContent([systemPrompt, imagePart, prompt || "Parse this CV/resume image"]);
+        return await model.generateContent([prompt, imagePart]);
       });
     } else {
-      let fullPrompt;
-      
-      
-      const userInput = cvData 
-        ? `Please format and improve this CV/resume data:\n${JSON.stringify(cvData)}\n${prompt || ""}` 
-        : prompt;
-      
-      if (customPromptTemplate) {
-        fullPrompt = customPromptTemplate
-          .replace('{context}', context)
-          .replace('{system_prompt}', systemPrompt)
-          .replace('{prompt}', userInput);
-      } else {
-        fullPrompt = `${systemPrompt}\n${context}\nUser: ${userInput}\nResponse:`;
-      }
-      
       result = await retryWithExponentialBackoff(async () => {
-        return await model.generateContent(fullPrompt);
+        return await model.generateContent(prompt);
       });
     }
     
     const response = result.response.text();
     
-    
-    conversations[conversationId].push(`User: ${prompt || JSON.stringify(cvData)}`);
-    conversations[conversationId].push(`CV Assistant: ${response}`);
-    
+    conversations[conversationId].push(`User: ${prompt}`);
+    conversations[conversationId].push(`AI: ${response}`);
     
     while (conversations[conversationId].length > 20) {
       conversations[conversationId].shift();
     }
     
-    
     if (!isProd && imageData && fs.existsSync(imageData)) {
       fs.unlinkSync(imageData);
     }
-    
     
     res.json({ 
       success: true, 
@@ -249,7 +217,7 @@ app.post('/api/generate-cv', async (req, res) => {
     });
     
   } catch (error) {
-    console.error("CV generation error:", error);
+    console.error("Generation error:", error);
     
     res.status(500).json({ 
       success: false, 
@@ -259,99 +227,50 @@ app.post('/api/generate-cv', async (req, res) => {
   }
 });
 
-app.post('/api/format-cv', async (req, res) => {
-  try {
-    const { cvData, style = "professional" } = req.body;
-    
-    if (!cvData) {
-      return res.status(400).json({
-        success: false,
-        error: "CV data is required"
-      });
-    }
-    
-    
-    const model = genAI.getGenerativeModel({ 
-      model: MODEL_NAME,
-      generationConfig: MODEL_CONFIG.defaultConfig
-    });
-    
-    const prompt = `I need to format a CV/resume in a ${style} style. Here's the data:\n${JSON.stringify(cvData)}\n\nPlease provide formatting suggestions and improvements to make this CV stand out.`;
-    
-    const result = await retryWithExponentialBackoff(async () => {
-      return await model.generateContent(`${DEFAULT_SYSTEM_PROMPT}\n\nUser: ${prompt}\nResponse:`);
-    });
-    
-    const response = result.response.text();
-    
-    res.json({ 
-      success: true, 
-      response,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error("CV formatting error:", error);
-    
-    res.status(500).json({ 
-      success: false, 
-      error: "Formatting failed",
-      message: error.message 
+app.get('/api/conversation/:threadID', (req, res) => {
+  const { threadID } = req.params;
+  
+  if (!conversations[threadID]) {
+    return res.status(404).json({
+      success: false,
+      error: "Conversation not found"
     });
   }
+  
+  res.json({
+    success: true,
+    threadID,
+    history: conversations[threadID]
+  });
 });
 
-app.post('/api/improve-cv', async (req, res) => {
-  try {
-    const { cvSection, currentContent, jobTitle, industry } = req.body;
-    
-    if (!cvSection || !currentContent) {
-      return res.status(400).json({
-        success: false,
-        error: "CV section and current content are required"
-      });
+app.get('/api/prompt-guide', (req, res) => {
+  res.json({
+    success: true,
+    guide: {
+      title: "Custom Prompt Engineering Guide",
+      description: "This guide helps you create effective prompts for CV generation and improvement",
+      promptStructure: {
+        systemInstruction: "Start your prompt with a clear system instruction to define the AI's role",
+        userQuery: "Then provide your specific request for the CV task",
+        examples: "Optionally include examples to guide the output format",
+        constraints: "Specify any constraints or requirements for the output"
+      },
+      templates: {
+        cvGeneration: "You are a professional CV assistant. Create a CV for a {role} with {years} years of experience in {industry}.",
+        cvImprovement: "You are a professional CV reviewer. Improve the following CV section: {section_content}. Focus on {focus_area}.",
+        cvFormatting: "You are a CV formatting expert. Format the following CV data into a professional CV layout: {cv_data}."
+      },
+      tips: [
+        "Be specific about the output format you want",
+        "Include examples of preferred style or tone",
+        "Specify the target job role and industry for better results",
+        "Break complex CV tasks into separate prompts for better results",
+        "Use clear section markers (SKILLS:, EXPERIENCE:, etc.) in your prompt"
+      ]
     }
-    
-    
-    const model = genAI.getGenerativeModel({ 
-      model: MODEL_NAME,
-      generationConfig: {
-        ...MODEL_CONFIG.defaultConfig,
-        temperature: 0.8 
-      }
-    });
-    
-    const prompt = `I need to improve the "${cvSection}" section of my CV/resume.
-Current content: "${currentContent}"
-${jobTitle ? `Target job title: ${jobTitle}` : ''}
-${industry ? `Industry: ${industry}` : ''}
-
-Please provide an improved version that is more impactful and professional.`;
-    
-    const result = await retryWithExponentialBackoff(async () => {
-      return await model.generateContent(`${DEFAULT_SYSTEM_PROMPT}\n\nUser: ${prompt}\nResponse:`);
-    });
-    
-    const response = result.response.text();
-    
-    res.json({ 
-      success: true, 
-      response,
-      timestamp: new Date().toISOString(),
-      section: cvSection
-    });
-    
-  } catch (error) {
-    console.error("CV improvement error:", error);
-    
-    res.status(500).json({ 
-      success: false, 
-      error: "Improvement failed",
-      message: error.message 
-    });
-  }
+  });
 });
-
 
 app.use((err, req, res, next) => {
   console.error("Error:", err);
